@@ -85,60 +85,82 @@ class GradientGenerator:
             
     def process_image(self, image_path: str, steps: int) -> Tuple[np.ndarray, List[dict]]:
         """优化的图像处理主函数"""
-        # 1. 读取图片并转换到HSV空间（OpenCV的HSV更快）
+        # 1. 读取图片并转换到HSV空间
         img = cv2.imread(image_path)
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         
-        # 2. 将图像重塑为二维数组 [pixels, (h,s,v)]
+        # 2. 将图像重塑为二维数组
         pixels_hsv = hsv.reshape(-1, 3)
         pixels_bgr = img.reshape(-1, 3)
         
-        # 3. 计算色相直方图（只关注H通道）
-        hist_h = cv2.calcHist([pixels_hsv], [0], None, [180], [0, 180])
-        # 使用高斯模糊平滑直方图
-        hist_smooth = cv2.GaussianBlur(hist_h, (1, 15), 3).reshape(-1)
-        
-        # 4. 按V值（明度）对像素进行分组
-        v_step = 256 // steps  # 明度步长
         gradient_colors = []
         color_info = []
         
-        for i in range(steps):
-            v_min = i * v_step
-            v_max = min(255, (i + 1) * v_step)
+        if self.hue_normal_var.get():
+            # 色相正态分布模式
+            # 3. 计算色相直方图
+            hist_h = cv2.calcHist([pixels_hsv], [0], None, [180], [0, 180])
+            hist_smooth = cv2.GaussianBlur(hist_h, (1, 15), 3).reshape(-1)
             
-            # 在当前明度范围内的像素掩码
-            v_mask = (pixels_hsv[:, 2] >= v_min) & (pixels_hsv[:, 2] < v_max)
-            if not np.any(v_mask):
-                continue
+            # 4. 按V值（明度）对像素进行分组
+            v_step = 256 // steps
+            for i in range(steps):
+                v_min = i * v_step
+                v_max = min(255, (i + 1) * v_step)
                 
-            # 获取该明度范围内的所有像素
-            range_pixels_hsv = pixels_hsv[v_mask]
-            range_pixels_bgr = pixels_bgr[v_mask]
+                v_mask = (pixels_hsv[:, 2] >= v_min) & (pixels_hsv[:, 2] < v_max)
+                if not np.any(v_mask):
+                    continue
+                    
+                range_pixels_hsv = pixels_hsv[v_mask]
+                range_pixels_bgr = pixels_bgr[v_mask]
+                
+                h_values = range_pixels_hsv[:, 0]
+                h_weights = hist_smooth[h_values]
+                
+                max_weight_idx = np.argmax(h_weights)
+                selected_color = range_pixels_bgr[max_weight_idx]
+                gradient_colors.append(selected_color)
+                
+                # 收集颜色信息
+                bgr_color = tuple(map(int, selected_color))
+                rgb_color = bgr_color[::-1]
+                color_info.append({
+                    'Index': len(gradient_colors),
+                    'RGB': f'({rgb_color[0]}, {rgb_color[1]}, {rgb_color[2]})',
+                    'BGR': f'({bgr_color[0]}, {bgr_color[1]}, {bgr_color[2]})',
+                    'Value': int(range_pixels_hsv[max_weight_idx, 2]),
+                    'Hue': int(range_pixels_hsv[max_weight_idx, 0] * 2),
+                    'Saturation': int(range_pixels_hsv[max_weight_idx, 1] / 255 * 100)
+                })
+        else:
+            # 普通模式：按明度均匀取样
+            # 获取唯一的像素值
+            unique_pixels = np.unique(pixels_bgr, axis=0)
+            # 转换为HSV进行排序
+            unique_hsv = cv2.cvtColor(unique_pixels.reshape(-1, 1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3)
+            # 按V值排序
+            sort_idx = np.argsort(unique_hsv[:, 2])
+            sorted_pixels = unique_pixels[sort_idx]
             
-            # 获取该范围内最常见的色相
-            h_values = range_pixels_hsv[:, 0]
-            h_weights = hist_smooth[h_values]
-            
-            # 使用权重选择颜色
-            max_weight_idx = np.argmax(h_weights)
-            selected_color = range_pixels_bgr[max_weight_idx]
-            
-            # 添加到结果列表
-            gradient_colors.append(selected_color)
+            # 均匀选择颜色
+            step_size = max(1, len(sorted_pixels) // steps)
+            gradient_colors = [sorted_pixels[i] for i in range(0, len(sorted_pixels), step_size)][:steps]
             
             # 收集颜色信息
-            bgr_color = tuple(map(int, selected_color))
-            rgb_color = bgr_color[::-1]
-            color_info.append({
-                'Index': len(gradient_colors),
-                'RGB': f'({rgb_color[0]}, {rgb_color[1]}, {rgb_color[2]})',
-                'BGR': f'({bgr_color[0]}, {bgr_color[1]}, {bgr_color[2]})',
-                'Value': int(range_pixels_hsv[max_weight_idx, 2]),
-                'Hue': int(range_pixels_hsv[max_weight_idx, 0] * 2),  # 转换到0-360
-                'Saturation': int(range_pixels_hsv[max_weight_idx, 1] / 255 * 100)  # 转换到百分比
-            })
-        
+            for color in gradient_colors:
+                bgr_color = tuple(map(int, color))
+                rgb_color = bgr_color[::-1]
+                hsv_color = cv2.cvtColor(np.uint8([[color]]), cv2.COLOR_BGR2HSV)[0][0]
+                color_info.append({
+                    'Index': len(color_info) + 1,
+                    'RGB': f'({rgb_color[0]}, {rgb_color[1]}, {rgb_color[2]})',
+                    'BGR': f'({bgr_color[0]}, {bgr_color[1]}, {bgr_color[2]})',
+                    'Value': int(hsv_color[2]),
+                    'Hue': int(hsv_color[0] * 2),
+                    'Saturation': int(hsv_color[1] / 255 * 100)
+                })
+
         # 5. 创建色块网格图
         block_size = 400
         blocks_per_row = 8
