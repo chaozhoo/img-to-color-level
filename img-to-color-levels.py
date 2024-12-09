@@ -5,38 +5,66 @@ import numpy as np
 from typing import List, Tuple, Optional
 import os
 import json
+from PIL import Image, ImageTk
+from tkinterdnd2 import TkinterDnD, DND_FILES  # 修改导入方式
 
 class GradientGenerator:
     def __init__(self):
-        self.window = tk.Tk()
-        self.window.title("渐变文件生成器")
-        self.window.geometry("600x500")
+        # 使用TkinterDnD.Tk()来创建支持拖放的窗口
+        self.window = TkinterDnD.Tk()
+        self.window.title("图片生成色阶网格图 by Oahc")
+        self.window.geometry("1200x700")  # 增加窗口大小以容纳预览
         
-        # 创建主框架来容纳所有元素
-        main_frame = ttk.Frame(self.window, padding="10")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # 创建左右分栏
+        left_frame = ttk.Frame(self.window, padding="10")
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # 文件列表 - 给予更合理的高度权重
-        self.files_frame = ttk.LabelFrame(main_frame, text="选择的文件", padding=10)
+        right_frame = ttk.Frame(self.window, padding="10")
+        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # 左侧：原有的控制界面
+        self.setup_control_panel(left_frame)
+        
+        # 右侧：预览区域
+        self.setup_preview_panel(right_frame)
+        
+        self.selected_files = []
+        
+    def setup_control_panel(self, parent):
+        """设置控制面板"""
+        # 文件列表框架
+        self.files_frame = ttk.LabelFrame(parent, text="选择的文件（可拖放图片）", padding=10)
         self.files_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # 添加滚动条
         scrollbar = ttk.Scrollbar(self.files_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.files_listbox = tk.Listbox(self.files_frame, yscrollcommand=scrollbar.set)
+        # 使用tk.Listbox而不是tkdnd.Listbox
+        self.files_listbox = tk.Listbox(
+            self.files_frame,
+            yscrollcommand=scrollbar.set,
+            selectmode=tk.SINGLE
+        )
         self.files_listbox.pack(fill=tk.BOTH, expand=True, padx=(0, 5))
         scrollbar.config(command=self.files_listbox.yview)
         
+        # 绑定拖放事件
+        self.files_listbox.drop_target_register(DND_FILES)
+        self.files_listbox.dnd_bind('<<Drop>>', self.handle_drop)
+        
+        # 绑定选择事件
+        self.files_listbox.bind('<<ListboxSelect>>', self.on_select_file)
+        
         # 控制按钮 - 固定高度
-        self.control_frame = ttk.Frame(main_frame)
+        self.control_frame = ttk.Frame(parent)
         self.control_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Button(self.control_frame, text="选择文件", command=self.select_files).pack(side=tk.LEFT, padx=5)
         ttk.Button(self.control_frame, text="清除列表", command=self.clear_files).pack(side=tk.LEFT, padx=5)
         
         # 阶梯数设置 - 固定高度
-        self.settings_frame = ttk.LabelFrame(main_frame, text="渐变设置", padding=10)
+        self.settings_frame = ttk.LabelFrame(parent, text="渐变设置", padding=10)
         self.settings_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Label(self.settings_frame, text="阶梯数:").pack(side=tk.LEFT)
@@ -61,7 +89,7 @@ class GradientGenerator:
         ).pack(side=tk.LEFT, padx=15)
         
         # 底部框架 - 用于容纳进度条和生成按钮
-        bottom_frame = ttk.Frame(main_frame)
+        bottom_frame = ttk.Frame(parent)
         bottom_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=5)
         
         # 进度条
@@ -71,8 +99,108 @@ class GradientGenerator:
         # 生成按钮
         ttk.Button(bottom_frame, text="生成色块图", command=self.generate_color_grid).pack(fill=tk.X)
         
-        self.selected_files = []
+    def setup_preview_panel(self, parent):
+        """设置预览面板"""
+        # 预览开关
+        self.preview_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            parent,
+            text="启用预览",
+            variable=self.preview_var,
+            command=self.toggle_preview
+        ).pack(fill=tk.X, pady=5)
         
+        # 重排图预览
+        sorted_frame = ttk.LabelFrame(parent, text="像素重排预览", padding=10)
+        sorted_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.sorted_preview = ttk.Label(sorted_frame)
+        self.sorted_preview.pack(fill=tk.BOTH, expand=True)
+        
+        # 色块图预览
+        grid_frame = ttk.LabelFrame(parent, text="色块图预览", padding=10)
+        grid_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.grid_preview = ttk.Label(grid_frame)
+        self.grid_preview.pack(fill=tk.BOTH, expand=True)
+
+    def handle_drop(self, event):
+        """处理文件拖放"""
+        # 修改文件路径获取方式
+        files = event.data.split()  # 文件路径以空格分隔
+        valid_files = []
+        for f in files:
+            # 移除可能的花括号（某些系统会添加）
+            f = f.strip('{}')
+            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                valid_files.append(f)
+        
+        if valid_files:
+            self.selected_files.extend(valid_files)
+            self.update_files_list()
+
+    def on_select_file(self, event):
+        """处理文件选择事件"""
+        if not self.preview_var.get():
+            return
+            
+        selection = self.files_listbox.curselection()
+        if not selection:
+            return
+            
+        try:
+            file_path = self.selected_files[selection[0]]
+            self.update_preview(file_path)
+        except Exception as e:
+            messagebox.showerror("预览错误", str(e))
+
+    def update_preview(self, file_path: str):
+        """更新预览图像"""
+        try:
+            steps = int(self.steps_var.get())
+            if steps < 2 or steps > 256:
+                raise ValueError("阶梯数必须在2-256之间")
+                
+            # 生成预览图像
+            grid_image, _, sorted_image = self.process_image(file_path, steps)
+            
+            # 调整预览图像大小
+            preview_width = 400
+            
+            if sorted_image is not None:
+                h, w = sorted_image.shape[:2]
+                scale = preview_width / w
+                preview_size = (preview_width, int(h * scale))
+                sorted_preview = cv2.resize(sorted_image, preview_size)
+                # 转换为PhotoImage
+                sorted_preview = cv2.cvtColor(sorted_preview, cv2.COLOR_BGR2RGB)
+                sorted_preview = Image.fromarray(sorted_preview)
+                sorted_preview = ImageTk.PhotoImage(sorted_preview)
+                self.sorted_preview.configure(image=sorted_preview)
+                self.sorted_preview.image = sorted_preview
+            
+            h, w = grid_image.shape[:2]
+            scale = preview_width / w
+            preview_size = (preview_width, int(h * scale))
+            grid_preview = cv2.resize(grid_image, preview_size)
+            # 转换为PhotoImage
+            grid_preview = cv2.cvtColor(grid_preview, cv2.COLOR_BGR2RGB)
+            grid_preview = Image.fromarray(grid_preview)
+            grid_preview = ImageTk.PhotoImage(grid_preview)
+            self.grid_preview.configure(image=grid_preview)
+            self.grid_preview.image = grid_preview
+            
+        except Exception as e:
+            messagebox.showerror("预览错误", str(e))
+
+    def toggle_preview(self):
+        """切换预览状态"""
+        if self.preview_var.get():
+            selection = self.files_listbox.curselection()
+            if selection:
+                self.on_select_file(None)
+        else:
+            self.sorted_preview.configure(image='')
+            self.grid_preview.configure(image='')
+
     def select_files(self):
         files = filedialog.askopenfilenames(
             title="选择图片文件",
