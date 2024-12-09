@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import cv2
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import os
 import json
 
@@ -52,6 +52,14 @@ class GradientGenerator:
             variable=self.hue_normal_var
         ).pack(side=tk.LEFT, padx=15)
         
+        # 添加保存重排图片选项
+        self.save_sorted_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self.settings_frame, 
+            text="保存像素重排图", 
+            variable=self.save_sorted_var
+        ).pack(side=tk.LEFT, padx=15)
+        
         # 底部框架 - 用于容纳进度条和生成按钮
         bottom_frame = ttk.Frame(main_frame)
         bottom_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=5)
@@ -83,10 +91,55 @@ class GradientGenerator:
         for file in self.selected_files:
             self.files_listbox.insert(tk.END, os.path.basename(file))
             
-    def process_image(self, image_path: str, steps: int) -> Tuple[np.ndarray, List[dict]]:
+    def create_sorted_image(self, img: np.ndarray, use_hue_normal: bool) -> np.ndarray:
+        """创建像素重排后的图片"""
+        # 保持原始图片形状
+        height, width = img.shape[:2]
+        
+        # 转换到HSV空间
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        pixels_hsv = hsv.reshape(-1, 3)
+        pixels_bgr = img.reshape(-1, 3)
+        
+        if use_hue_normal:
+            # 色相正态分布模式：按V->H->S排序
+            # 计算色相权重
+            hist_h = cv2.calcHist([hsv], [0], None, [180], [0, 180])
+            hist_smooth = cv2.GaussianBlur(hist_h, (1, 15), 3).reshape(-1)
+            h_weights = hist_smooth[pixels_hsv[:, 0]]
+            
+            # 创建排序键
+            sort_keys = np.column_stack([
+                pixels_hsv[:, 2],  # V (主要排序键)
+                h_weights,         # 色相权重（第二排序键）
+                pixels_hsv[:, 1]   # S（第三排序键）
+            ])
+        else:
+            # 普通模式：按V->H->S排序
+            sort_keys = pixels_hsv
+        
+        # 获取排序索引
+        sort_idx = np.lexsort((sort_keys[:, 1], sort_keys[:, 0], sort_keys[:, 2]))
+        
+        # 重排像素
+        sorted_pixels = pixels_bgr[sort_idx]
+        
+        # 重塑回原始形状
+        sorted_image = sorted_pixels.reshape(height, width, 3)
+        
+        return sorted_image
+
+    def process_image(self, image_path: str, steps: int) -> Tuple[np.ndarray, List[dict], Optional[np.ndarray]]:
         """优化的图像处理主函数"""
-        # 1. 读取图片并转换到HSV空间
+        # 1. 读取图片
         img = cv2.imread(image_path)
+        
+        # 2. 如果需要，创建重排图片
+        sorted_image = None
+        if self.save_sorted_var.get():
+            sorted_image = self.create_sorted_image(img, self.hue_normal_var.get())
+        
+        # 转换到HSV空间继续处理
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         
         # 2. 将图像重塑为二维数组
@@ -182,7 +235,7 @@ class GradientGenerator:
                 'Coordinates': f'({x1}, {y1}, {x1+block_size}, {y1+block_size})'
             })
         
-        return grid, color_info
+        return grid, color_info, sorted_image
 
     def generate_color_grid(self):
         """主处理函数"""
@@ -208,22 +261,29 @@ class GradientGenerator:
         for i, file_path in enumerate(self.selected_files):
             try:
                 # 处理图片
-                grid_image, color_info = self.process_image(file_path, steps)
+                grid_image, color_info, sorted_image = self.process_image(file_path, steps)
                 
-                # 生成输出文件名
+                # 生成基础文件名
                 base_name = os.path.splitext(os.path.basename(file_path))[0]
-                output_name = f"{base_name}_color_grid"
                 
-                # 保存图片
+                # 如果启用了保存重排图片
+                if self.save_sorted_var.get() and sorted_image is not None:
+                    sorted_path = self.get_unique_filename(
+                        os.path.join(save_dir, f"{base_name}_sorted"),
+                        '.png'
+                    )
+                    cv2.imwrite(sorted_path, sorted_image)
+                
+                # 保存色块网格图
                 png_path = self.get_unique_filename(
-                    os.path.join(save_dir, output_name), 
+                    os.path.join(save_dir, f"{base_name}_color_grid"),
                     '.png'
                 )
                 cv2.imwrite(png_path, grid_image)
                 
                 # 保存颜色信息
                 json_path = self.get_unique_filename(
-                    os.path.join(save_dir, output_name), 
+                    os.path.join(save_dir, f"{base_name}_info"),
                     '_info.json'
                 )
                 with open(json_path, 'w', encoding='utf-8') as f:
