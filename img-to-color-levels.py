@@ -6,7 +6,19 @@ from typing import List, Tuple, Optional
 import os
 import json
 from PIL import Image, ImageTk
-from tkinterdnd2 import TkinterDnD, DND_FILES  # 修改导入方式
+import sys
+
+def setup_tkdnd():
+    if getattr(sys, 'frozen', False):
+        # 如果是打包后的程序
+        base_path = sys._MEIPASS
+        tkdnd_path = os.path.join(base_path, 'tkinterdnd2')
+        if os.path.exists(tkdnd_path):
+            os.environ['TKDND_LIBRARY'] = tkdnd_path
+
+# 在导入 tkinterdnd2 之前设置路径
+setup_tkdnd()
+from tkinterdnd2 import TkinterDnD, DND_FILES
 
 class GradientGenerator:
     def __init__(self):
